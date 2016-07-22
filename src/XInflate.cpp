@@ -88,6 +88,9 @@
 	- 기존의 zlib 스타일의 루프 방식을 콜백 호출 방식으로 수정
 	- 사전 버퍼도 따로 할당하지 않고, 출력 버퍼를 같이 사용하도록 수정
 
+* 2016/7/22
+	- BYPASS 할때 루프 대신 WRITE_BLOCK 로 memcpy 로 속도 향상
+
 ***********************************************************************************/
 
 
@@ -162,11 +165,13 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 // 디버깅용 매크로
 //
 #ifdef _DEBUG
-#	define ADD_INPUT_COUNT		m_inputCount ++
-#	define ADD_OUTPUT_COUNT		m_outputCount ++
+#	define ADD_INPUT_COUNT			m_inputCount ++
+#	define ADD_OUTPUT_COUNT			m_outputCount ++
+#	define ADD_OUTPUT_COUNTX(x)		m_outputCount += x
 #else
 #	define ADD_INPUT_COUNT	
 #	define ADD_OUTPUT_COUNT
+#	define ADD_OUTPUT_COUNTX(x)
 #endif
 
 
@@ -213,7 +218,7 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 // 출력 버퍼에 한바이트 쓰기
 #define WRITE(byte)												\
 	ADD_OUTPUT_COUNT;											\
-	WIN_ADD(byte);												\
+	WIN_ADD;													\
 	CHECK_AND_FLUSH_OUT_BUFFER									\
 	*outBufferCur = byte;										\
 	outBufferCur++;
@@ -259,17 +264,23 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 // 출력 버퍼가 충분한지 체크하지 않는다.
 #define WRITE_FAST(byte)							\
 	ADD_OUTPUT_COUNT;								\
-	WIN_ADD(byte);									\
+	WIN_ADD;										\
 	*outBufferCur = byte;							\
 	outBufferCur++;												
 
+
+#define WRITE_BLOCK(in, len)						\
+	ADD_OUTPUT_COUNTX(len);							\
+	memcpy(outBufferCur, in, len);					\
+	windowCurPos +=len;								\
+	outBufferCur +=len;
 
 ////////////////////////////////////////////////
 //
 // 윈도우 매크로화
 //
 
-#define WIN_ADD(b)			(windowCurPos++)
+#define WIN_ADD				(windowCurPos++)
 #define WIN_GETBUF(dist)	(windowCurPos - dist)
 
 //
@@ -620,12 +631,17 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 				if(outBufferEnd - outBufferCur > toCopy)
 				{
 					// 출력 버퍼가 충분한 경우 - 출력 버퍼가 충분한지 여부를 체크하지 않는다.
+					/*
 					while(toCopy)
 					{
 						WRITE_FAST(*inBuffer);
 						inBuffer++;
 						toCopy--;
 					}
+					*/
+					WRITE_BLOCK(inBuffer, toCopy);
+					inBuffer += toCopy;
+					toCopy = 0;
 				}
 				else
 				{

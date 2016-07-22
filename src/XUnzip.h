@@ -88,6 +88,7 @@ public :
 	int						GetFileCount() { return m_fileCount; }
 	const XUnzipFileInfo*	GetFileInfo(int index);
 	BOOL					ExtractTo(int index, HANDLE hFile);
+	BOOL					ExtractTo(int index, XWriteStream* outFile);
 	BOOL					ExtractTo(int index, XBuffer& buf, BOOL addNull=FALSE);
 	BOOL					ExtractTo(LPCWSTR fileName, XBuffer& buf);
 	int						FindIndex(LPCSTR fileName);
@@ -143,6 +144,7 @@ private :
 	XUnzipFileInfo**	m_ppFileList;
 	int					m_fileCount;
 	int					m_fileListSize;
+	BOOL				m_checkCRC32;
 
 	XInflate*			m_inflate;
 };

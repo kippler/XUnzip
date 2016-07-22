@@ -141,6 +141,7 @@ XUnzip::XUnzip()
 	m_fileListSize = 0;
 	m_inflate = NULL;
 	m_err = XUNZIP_ERR_OK;
+	m_checkCRC32 = TRUE;
 }
 
 
@@ -491,7 +492,7 @@ BOOL XUnzip::ExtractTo(int index, HANDLE hFile)
 	XFileWriteStream output;
 	output.Attach(hFile);
 
-	return _ExtractToStream(index, &output);
+	return ExtractTo(index, &output);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -517,7 +518,7 @@ BOOL XUnzip::ExtractTo(int index, XBuffer& buf, BOOL addNull)
 	XMemoryWriteStream stream;
 	stream.Attach(buf.data, buf.dataSize);
 
-	return _ExtractToStream(index, &stream);
+	return ExtractTo(index, &stream);
 }
 
 BOOL XUnzip::ExtractTo(LPCWSTR fileName, XBuffer& buf)
@@ -589,7 +590,7 @@ BOOL XUnzip::ReadLocalHeader(XUnzipFileInfo* pFileInfo)
 /// @return 
 /// @date   Friday, May 14, 2010  4:09:31 PM
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-BOOL XUnzip::_ExtractToStream(int index, XWriteStream* output)
+BOOL XUnzip::ExtractTo(int index, XWriteStream* output)
 {
 	XUnzipFileInfo* pFileInfo = _GetFileInfo(index);
 	if(pFileInfo==NULL) return FALSE;
@@ -664,7 +665,8 @@ BOOL XUnzip::_ExtractToStream(int index, XWriteStream* output)
 			}
 			virtual BOOL	Write(BYTE* buf, int len)
 			{
-				m_crc32 = fast_crc32(m_crc32, buf, len);
+				if(m_checkCRC32)
+					m_crc32 = fast_crc32(m_crc32, buf, len);
 				m_outputRemain -= len;
 				return m_output->Write(buf, len);
 			}
@@ -673,6 +675,7 @@ BOOL XUnzip::_ExtractToStream(int index, XWriteStream* output)
 			INT64			m_inputRemain;
 			INT64			m_outputRemain;
 			DWORD			m_crc32;
+			BOOL			m_checkCRC32;
 		};
 
 		// 처음 호출인가?
@@ -686,6 +689,7 @@ BOOL XUnzip::_ExtractToStream(int index, XWriteStream* output)
 		mystream.m_output = output;
 		mystream.m_outputRemain = outputRemain;
 		mystream.m_crc32 = 0;
+		mystream.m_checkCRC32 = m_checkCRC32;
 
 		// 압축 풀고
 		XINFLATE_ERR errInflate = m_inflate->Inflate(&mystream);
@@ -703,7 +707,7 @@ BOOL XUnzip::_ExtractToStream(int index, XWriteStream* output)
 		ASSERT(0);
 
 	// crc 검사
-	if(crc32!=pFileInfo->crc32)
+	if(m_checkCRC32 && crc32!=pFileInfo->crc32)
 		DOFAIL(XUNZIP_ERR_INVALID_CRC);				// crc 에러 발생
 
 	// 완료되었음
