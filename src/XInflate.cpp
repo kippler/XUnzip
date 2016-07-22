@@ -189,7 +189,7 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 
 
 #define HUFFLOOKUP(result, pTable)								\
-		/* 데이타 부족 */											\
+		/* 데이타 부족 */										\
 		if(pTable->bitLenMin > bitLen)							\
 		{														\
 			result = -1;										\
@@ -197,7 +197,7 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 		else													\
 		{														\
 			pItem = &(pTable->pItem[pTable->mask & bits]);		\
-			/* 데이타 부족 */										\
+			/* 데이타 부족 */									\
 			if(pItem->bitLen > bitLen)							\
 			{													\
 				result = -1;									\
@@ -223,11 +223,11 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 #define CHECK_AND_FLUSH_OUT_BUFFER								\
 	if(outBufferCur>=outBufferEnd)								\
 	{															\
-		if(stream->Write(windowStartPos, outBufferCur - windowStartPos)==FALSE)		\
+		if(stream->Write(windowStartPos, (int)(outBufferCur - windowStartPos))==FALSE)		\
 			return XINFLATE_ERR_USER_STOP;						\
-		int dist = outBufferCur - windowCurPos;					\
+		int _dist = (int)(outBufferCur - windowCurPos);			\
 		memcpy(windowStartPos-DEFLATE_WINDOW_SIZE, outBufferCur - DEFLATE_WINDOW_SIZE, DEFLATE_WINDOW_SIZE);	\
-		windowCurPos = windowStartPos-dist ;					\
+		windowCurPos = windowStartPos-_dist ;					\
 		outBufferCur = windowStartPos;							\
 	}															\
 	
@@ -893,7 +893,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 	}
 
 END :
-	if (stream->Write(windowStartPos, outBufferCur - windowStartPos) == FALSE)
+	if (stream->Write(windowStartPos, (int)(outBufferCur - windowStartPos)) == FALSE)
 		return XINFLATE_ERR_USER_STOP;
 
 	if(state!= STATE_COMPLETED)			// 뭔가 잘못됬다.
