@@ -48,6 +48,16 @@ struct IDecodeStream
 };
 
 
+//#ifdef _WIN64
+//typedef UINT64 BITSTREAM;
+//#define BITSLEN2FILL	(7*8)			// 3bytes*8
+//#else
+typedef UINT BITSTREAM;
+#define BITSLEN2FILL	24				// 3bytes*8
+//#endif
+
+
+
 class XFastHuffTable;
 class XInflate
 {
@@ -97,7 +107,7 @@ private :
 		LPBYTE& outBufferEnd,
 		LPBYTE& windowStartPos, 
 		LPBYTE& windowCurPos,
-		UINT& bits, 
+		BITSTREAM& bits,
 		int& bitLen,
 		STATE& state,
 		int& windowLen, int& windowDistCode, int& symbol);

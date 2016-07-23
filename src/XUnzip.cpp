@@ -33,6 +33,7 @@
 
 ***********************************************************************************/
 
+#undef DOERR
 #define DOERR(err) {m_err = err; ASSERT(0); return FALSE;}
 #define DOERR2(err, ret) {m_err = err; ASSERT(0); return ret;}
 #define DOFAIL(err) {m_err = err; ASSERT(0); goto END;}

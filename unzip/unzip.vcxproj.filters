@@ -36,6 +36,12 @@
     <ClInclude Include="myutil.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\XFastHuffTable.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\XInflatePrivate.h">
+      <Filter>src</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">

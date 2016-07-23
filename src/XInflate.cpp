@@ -1,129 +1,8 @@
 #include "stdafx.h"
 #include "XInflate.h"
+#include "XFastHuffTable.h"
+#include "XInflatePrivate.h"
 
-/**********************************************************************************
-
-                                    -= history =-
-
-* 2010/4/5 코딩 시작
-* 2010/4/9 1차 완성
-	- 속도 비교 (34.5MB 짜리 gzip 파일, Q9400 CPU)
-		. zlib : 640ms
-		. xinflate : 1900ms
-
-* 2010/4/29 
-	- 속도 향상 최적화 
-		. 일부 함수 호출을 매크로화 시키기 : 1900ms
-		. 비트 스트림을 로컬 변수화 시키기: 1800ms
-		. Write 함수 매크로화: 1750ms
-		. Window 멤버 변수화: 1680ms
-		. Window 매크로화 + 로컬 변수화 : 1620ms
-		. InputBuffer 로컬 변수화 : 1610ms
-		. 출력 윈도우 로컬 변수화 : 1500ms;
-		. while() 루프에서 m_bCompleted 비교 제거 : 1470ms;
-		. while() 루프내에서 m_error 비교 제거 : 1450ms
-		. m_state 로컬 변수화 : 1450ms
-		. m_windowLen, m_windowDistCode 로컬 변수화 : 1390ms
-
-	- 나름 최적화 후 속도 차이 비교 (34.5MB 짜리 gzip 파일, Q9400 CPU)
-		. zlib : 640MS
-		. Halibut : 1750ms
-		. XInflate : 1370ms
-
-* 2010/4/30
-	- 코드 정리
-	- v1.0 최초 공개
-
-* 2010/5/11
-	- static table 이 필요할때만 생성하도록 수정
-	- 최적화
-		. 최적화 전 : 1340ms
-		. CHECK_TABLE 제거 : 1330ms
-		. FILLBUFFER() 개선: 1320ms
-		. table을 링크드 리스트에서 배열로 수정 : 1250ms
-
-* 2010/5/12
-	- 최적화 계속
-		. STATE_GET_LEN 의 break 제거 : 1220ms
-		. STATE_GET_DISTCODE 의 break 제거 : 1200ms
-		. STATE_GET_DIST 의 break 제거 : 1170ms
-
-* 2010/5/13
-	- 최적화 계속
-		. FastInflate() 로 분리후 FILLBUFFER_FAST, HUFFLOOKUP_FAST 적용 : 1200ms
-		. 허프만 트리 처리 방식 개선(단일 테이블 참조로 트리 탐색은 없애고 메모리 사용량도 줄이고) : 900ms
-		. HUFFLOOKUP_FAST 다시 적용 : 890ms
-		. WRITE_FAST 적용 : 810ms
-		. lz77 윈도우 출력시 while() 을 do-while 로 변경 : 800ms
-
-* 2010/5/19
-	- 출력 버퍼를 내부 alloc 대신 외부 버퍼를 이용할 수 있도록 기능 추가
-	- m_error 변수 제거
-
-* 2010/5/25
-	- 외부버퍼 출력 기능쪽 버그 수정
-	- direct copy 쪽 약간 개선
-
-* 2010/08/31
-	- 테이블 생성시 이상한값 들어오면 에러리턴하도록 수정
-
-* 2011/08/01
-	- STATE_GET_LEN 다음에 FILLBUFFER 를 안하고 STATE_GET_DISTCODE 로 넘어가면서 압축을 제대로 풀지 못하는 경우가 있던
-	  버그 수정 ( Inflate() 랑 FastInflate() 두곳 다 )
-
-* 2011/08/16
-	- coderecord 의 구조체를 사용하지 않고, len 과 dist에 접근하도록 수정
-		142MB 샘플 : 1820ms -> 1720ms 로 빨라짐
-    - HUFFLOOKUP_FAST 에서 m_pCurrentTable 를 참조하지 않고, pItems 를 참조하도록 수정
-		1720ms -> 1700ms 로 빨라짐 (zlib 는 1220ms)
-
-* 2012/01/28
-	- windowDistCode 가 32, 33 등이 될때 에러 처리 코드 수정
-	- _CreateTable 에서 테이블이 손상된 경우 에러 처리 코드 사용
-
-* 2012/02/7
-	- XFastHuffItem::XFastHuffItem() 를 주석으로 막았던거 풀어줌.
-
-* 2016/7/21
-	- 기존의 zlib 스타일의 루프 방식을 콜백 호출 방식으로 수정
-	- 사전 버퍼도 따로 할당하지 않고, 출력 버퍼를 같이 사용하도록 수정
-
-* 2016/7/22
-	- BYPASS 할때 루프 대신 WRITE_BLOCK 로 memcpy 로 속도 향상
-
-***********************************************************************************/
-
-
-// DEFLATE 의 압축 타입
-enum BTYPE
-{
-	BTYPE_NOCOMP			= 0,
-	BTYPE_FIXEDHUFFMAN		= 1,
-	BTYPE_DYNAMICHUFFMAN	= 2,
-	BTYPE_RESERVED			= 3		// ERROR
-};
-
-
-#define LENCODES_SIZE		29
-#define DISTCODES_SIZE		30
-
-static int lencodes_extrabits	[LENCODES_SIZE]  = {  0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   1,   1,   2,   2,   2,   2,   3,   3,   3,   3,   4,   4,   4,   4,   5,   5,   5,   5,   0};
-static int lencodes_min			[LENCODES_SIZE]  = {  3,   4,   5,   6,   7,   8,   9,  10,  11,  13,  15,  17,  19,  23,  27,  31,  35,  43,  51,  59,  67,  83,  99, 115, 131, 163, 195, 227, 258};
-static int distcodes_extrabits	[DISTCODES_SIZE] = {0, 0, 0, 0, 1, 1,  2,  2,  3,  3,  4,  4,  5,   5,   6,   6,   7,   7,   8,    8,    9,    9,   10,   10,   11,   11,    12,    12,    13,    13};
-static int distcodes_min		[DISTCODES_SIZE] = {1, 2, 3, 4, 5, 7,  9, 13, 17, 25, 33, 49, 65,  97, 129, 193, 257, 385, 513,  769, 1025, 1537, 2049, 3073, 4097, 6145,  8193, 12289, 16385, 24577};
-
-
-// code length 
-static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
-
-
-// 유틸 매크로
-#define HUFFTABLE_VALUE_NOT_EXIST	-1
-#ifndef ASSERT
-#	define ASSERT(x) {}
-#endif
-#define SAFE_DEL(x) if(x) {delete x; x=NULL;}
-#define SAFE_FREE(x) if(x) {free(x); x=NULL;}
 
 
 
@@ -152,7 +31,7 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 	BS_REMOVEBITS((bitLen % 8));
 
 #define BS_ADDBYTE(byte)						\
-	bits |= (byte) << bitLen;					\
+	bits |= (BITSTREAM(byte)) << bitLen;		\
 	bitLen += 8;
 //
 // 비트 스트림 매크로 처리
@@ -160,27 +39,13 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 ////////////////////////////////////////////////
 
 
-////////////////////////////////////////////////
-//
-// 디버깅용 매크로
-//
-#ifdef _DEBUG
-#	define ADD_INPUT_COUNT			m_inputCount ++
-#	define ADD_OUTPUT_COUNT			m_outputCount ++
-#	define ADD_OUTPUT_COUNTX(x)		m_outputCount += x
-#else
-#	define ADD_INPUT_COUNT	
-#	define ADD_OUTPUT_COUNT
-#	define ADD_OUTPUT_COUNTX(x)
-#endif
-
 
 ////////////////////////////////////////////////
 //
 // 반복 작업 매크로화
 //
 #define FILLBUFFER()							\
-	while(bitLen<=24)							\
+	while(bitLen<=BITSLEN2FILL)					\
 	{											\
 		if(inBufferRemain==0)					\
 			break;								\
@@ -193,27 +58,26 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 		goto END;
 
 
-#define HUFFLOOKUP(result, pTable)								\
-		/* 데이타 부족 */										\
-		if(pTable->bitLenMin > bitLen)							\
-		{														\
-			result = -1;										\
-		}														\
-		else													\
-		{														\
-			pItem = &(pTable->pItem[pTable->mask & bits]);		\
-			/* 데이타 부족 */									\
-			if(pItem->bitLen > bitLen)							\
-			{													\
-				result = -1;									\
-			}													\
-			else												\
-			{													\
-				result = pItem->symbol;							\
-				BS_REMOVEBITS(pItem->bitLen);					\
-			}													\
-		}
-
+//#define HUFFLOOKUP(result, pTable)								\
+//		/* 데이타 부족 */											\
+//		if(pTable->bitLenMin > bitLen)							\
+//		{														\
+//			result = -1;										\
+//		}														\
+//		else													\
+//		{														\
+//			pItem = &(pTable->pItem[pTable->mask & bits]);		\
+//			/* 데이타 부족 */									\
+//			if(pItem->bitLen > bitLen)							\
+//			{													\
+//				result = -1;									\
+//			}													\
+//			else												\
+//			{													\
+//				result = pItem->symbol;							\
+//				BS_REMOVEBITS(pItem->bitLen);					\
+//			}													\
+//		}
 
 // 출력 버퍼에 한바이트 쓰기
 #define WRITE(byte)												\
@@ -246,7 +110,7 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 
 // 입력 버퍼가 충분한지 체크하지 않는다.
 #define FILLBUFFER_FAST()								\
-	while(bitLen<=24)									\
+	while(bitLen<=BITSLEN2FILL)									\
 	{													\
 		BS_ADDBYTE(*inBuffer);							\
 		inBufferRemain--;								\
@@ -255,10 +119,10 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 	}													\
 
 // 비트스트림 데이타(bits + bitLen)가 충분한지 체크하지 않는다.
-#define HUFFLOOKUP_FAST(result)							\
-		pItem = &(pItems[mask & bits]);					\
-		result = pItem->symbol;							\
-		BS_REMOVEBITS(pItem->bitLen);					
+//#define HUFFLOOKUP_FAST(result)							\
+//		pItem = &(pItems[mask & bits]);					\
+//		result = pItem->symbol;							\
+//		BS_REMOVEBITS(pItem->bitLen);					
 
 
 // 출력 버퍼가 충분한지 체크하지 않는다.
@@ -290,104 +154,6 @@ static const unsigned char lenlenmap[] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 
 
 
 
-/////////////////////////////////////////////////////
-//
-// 허프만 트리를 빨리 탐색할 수 있게 하기 위해서
-// 트리 전체를 하나의 배열로 만들어 버린다.
-//   
-
-struct XFastHuffItem									// XFastHuffTable 의 아이템
-{
-	// 깨진 데이타에서 버퍼 오버플로우를 막기 위해서 항상 초기화를 해줘야 한다 ㅠ.ㅠ
-	XFastHuffItem() 
-	{
-		bitLen = 0;
-		symbol = HUFFTABLE_VALUE_NOT_EXIST;
-	}
-	int		bitLen;										// 유효한 비트수
-	int		symbol;										// 유효한 심볼
-};
-
-class XFastHuffTable
-{
-public :
-	XFastHuffTable()
-	{
-		pItem = NULL;
-	}
-	~XFastHuffTable()
-	{
-		if(pItem){ delete[] pItem; pItem=NULL;}
-	}
-	// 배열 생성
-	void	Create(int _bitLenMin, int _bitLenMax)
-	{
-		if(pItem) ASSERT(0);							// 발생 불가
-
-		bitLenMin = _bitLenMin;
-		bitLenMax = _bitLenMax;
-		mask	  = (1<<bitLenMax) - 1;					// 마스크
-		itemCount = 1<<bitLenMax;						// 조합 가능한 최대 테이블 크기
-		pItem     = new XFastHuffItem[itemCount];		// 2^maxBitLen 만큼 배열을 만든다.
-	}
-	// 심볼 데이타를 가지고 전체 배열을 채운다.
-	BOOL	SetValue(int symbol, int bitLen, UINT bitCode)
-	{
-		/*
-			만일 허프만 트리 노드에서 0->1->1 이라는 데이타가 'A' 라면
-			symbol = 'A',   bitLen = 3,   bitCode = 3  이 파라메터로 전달된다.
-
-			* 실제 bitstream 은 뒤집어져 들어오기 때문에 나중에 참조를 빨리 하기 위해서
-			  0->1->1 을 1<-1<-0 으로 뒤집는다.
-
-			* 만일 bitLenMax 가 5 라면 뒤집어진 1<-1<-0 에 의 앞 2bit 로 조합 가능한
-			  00110, 01110, 10110, 11110 에 대해서도 동일한 심볼을 참조할 수 있도록 만든다.
-		*/
-		//::Ark_DebugW(L"SetValue: %d %d %d", symbol, bitLen, bitCode);
-		if(bitCode>=((UINT)1<<bitLenMax))
-		{ASSERT(0); return FALSE;}			// bitLenmax 가 3 이라면.. 111 까지만 가능하다
-
-
-		UINT revBitCode = 0;
-		// 뒤집기
-		int i;
-		for(i=0;i<bitLen;i++)
-		{
-			revBitCode <<= 1;
-			revBitCode |= (bitCode & 0x01);
-			bitCode >>= 1;
-		}
-
-		int		add2code = (1<<bitLen);		// bitLen 이 3 이라면 add2code 에는 1000(bin) 이 들어간다
-
-		// 배열 채우기
-		for(;;)
-		{
-#ifdef _DEBUG
-			if(revBitCode>=itemCount) ASSERT(0);
-
-			if(pItem[revBitCode].symbol!=  HUFFTABLE_VALUE_NOT_EXIST) 
-			{ ASSERT(0); return FALSE;}
-#endif
-			pItem[revBitCode].bitLen = bitLen;
-			pItem[revBitCode].symbol = symbol;
-
-			// 조합 가능한 bit code 를 처리하기 위해서 값을 계속 더한다.
-			revBitCode += add2code;
-
-			// 조합 가능한 범위가 벗어난 경우 끝낸다
-			if(revBitCode >= itemCount)
-				break;
-		}
-		return TRUE;
-	}
-
-	XFastHuffItem*	pItem;							// (huff) code 2 symbol 아이템, code가 배열의 위치 정보가 된다.
-	int				bitLenMin;						// 유효한 최소 비트수
-	int				bitLenMax;						// 유효한 최대 비트수
-	UINT			mask;							// bitLenMax 에 대한 bit mask
-	UINT			itemCount;						// bitLenMax 로 생성 가능한 최대 아이템 숫자
-};
 
 static const char* xinflate_copyright = 
 "[XInflate - Copyright(C) 2016, by kippler]";
@@ -487,7 +253,6 @@ XINFLATE_ERR XInflate::Init()
 /// @return 
 /// @date   Thursday, April 08, 2010  4:18:55 PM
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#define	DOERR(x) { ASSERT(0); ret = x; goto END; }
 XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 {
 	XINFLATE_ERR	ret = XINFLATE_ERR_OK;
@@ -496,7 +261,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 	ret = Init();
 	if (ret != XINFLATE_ERR_OK) return ret;
 
-	UINT		bits=0;
+	BITSTREAM	bits=0;
 	int			bitLen=0;
 	STATE		state= STATE_START;
 	int			windowLen=0;
@@ -514,7 +279,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 	// 로컬 변수
 	int					extrabits;
 	int					dist;
-	XFastHuffItem*		pItem;			// HUFFLOOKUP() 에서 사용
+	//XFastHuffItem*		pItem;			// HUFFLOOKUP() 에서 사용
 	BYTE				byte;			// 임시 변수
 	XINFLATE_ERR		err;
 
@@ -526,6 +291,11 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 		{
 			inBuffer = m_inBuffer;
 			inBufferRemain = stream->Read(inBuffer, DEFAULT_INBUF_SIZE);
+			if (inBufferRemain == 0 && bitLen==0) 
+			{
+				if(state!= STATE_COMPLETED)ASSERT(0); 
+				break;
+			}
 		}
 		
 		FILLBUFFER();
@@ -534,8 +304,8 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 		{
 			// 헤더 분석 시작
 		case STATE_START :
-			if(bitLen<3) 
-				goto END;
+			if (bitLen < 3)
+				continue;
 
 			// 마지막 블럭 여부
 			m_bFinalBlock = BS_EATBIT();
@@ -564,7 +334,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 		case STATE_NO_COMPRESSION_LEN :
 			// LEN
 			if(bitLen<16) 
-				goto END;
+				continue;
 			uncompRemain = BS_EATBITS(16);
 			state = STATE_NO_COMPRESSION_NLEN;
 
@@ -573,7 +343,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 		case STATE_NO_COMPRESSION_NLEN :
 			// NLEN
 			if(bitLen<16) 
-				goto END;
+				continue;
 			{
 				UINT32 nlen = BS_EATBITS(16);
 				// one's complement 
@@ -586,12 +356,10 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 		case STATE_NO_COMPRESSION_BYPASS :
 			// 데이타 가져오기
 			if(bitLen<8) 
-				goto END;
+				continue;
 
 			//////////////////////////////////////////////
-			//
 			// 원래 코드
-			//
 			/*
 			{
 				byte = BS_EATBITS(8);
@@ -683,6 +451,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 			// 길이 가져오기
 		case STATE_GET_LEN :
 			// zlib 의 inflate_fast 호출 조건 흉내내기
+			/*
 			if(inBufferRemain>FASTINFLATE_MIN_BUFFER_NEED)
 			{
 				if(symbol<=256)	ASSERT(0);
@@ -698,10 +467,11 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 				break;
 			}
+			*/
 
 			extrabits = lencodes_extrabits[symbol - 257];
 			if (bitLen < extrabits) 
-				goto END;
+				continue;
 
 			// RFC 1951 3.2.5
 			// 기본 길이에 extrabit 만큼의 비트의 내용을 더하면 진짜 길이가 나온다
@@ -713,10 +483,10 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 			// 거리 코드 가져오기
 		case STATE_GET_DISTCODE :
-			HUFFLOOKUP(windowDistCode, m_pCurrentDistTable);
-
+			//HUFFLOOKUP(windowDistCode, m_pCurrentDistTable);
+			windowDistCode = m_pCurrentDistTable->HUFFLOOKUP(bitLen, bits);
 			if(windowDistCode<0)
-				goto END;
+				continue;
 
 			//if(windowDistCode==30 || windowDistCode==31)	// 30 과 31은 생길 수 없다. RFC1951 3.2.6
 			if(windowDistCode>=30)							
@@ -733,7 +503,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 			// DIST 구하기
 			if(bitLen<extrabits)
-				goto END;
+				continue;
 
 			dist = distcodes_min[windowDistCode] + BS_EATBITS(extrabits);
 
@@ -752,11 +522,12 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 			// 심볼 가져오기.
 		case STATE_GET_SYMBOL :
-			HUFFLOOKUP(symbol, m_pCurrentTable);
-
+			//HUFFLOOKUP(symbol, m_pCurrentTable);
+			symbol = m_pCurrentTable->HUFFLOOKUP(bitLen, bits);
 			if(symbol<0) 
-				goto END;
-			else if(symbol<256)
+				continue;
+
+			if(symbol<256)
 			{
 				byte = (BYTE)symbol;
 				WRITE(byte);
@@ -781,8 +552,8 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 			// 다이나믹 허프만 시작
 		case STATE_DYNAMIC_HUFFMAN :
-			if(bitLen<5+5+4) 
-				goto END;
+			if (bitLen < 5 + 5 + 4)
+				continue;
 
 			// 테이블 초기화
 			SAFE_DEL(m_pDynamicInfTable);
@@ -803,9 +574,8 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 			// 길이의 길이 가져오기.
 		case STATE_DYNAMIC_HUFFMAN_LENLEN :
-
 			if(bitLen<3) 
-				goto END;
+				continue;
 
 			// 3bit 씩 코드 길이의 코드 길이 정보 가져오기.
 			while (m_lenghtsPtr < m_lenghtsNum && bitLen >= 3) 
@@ -858,7 +628,8 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 			{
 				// 길이 정보 코드 가져오기
 				int code=-1;
-				HUFFLOOKUP(code, m_pLenLenTable);
+				//HUFFLOOKUP(code, m_pLenLenTable);
+				code = m_pLenLenTable->HUFFLOOKUP(bitLen, bits);
 
 				if (code == -1)
 					goto END;
@@ -883,7 +654,7 @@ XINFLATE_ERR XInflate::Inflate(IDecodeStream* stream)
 
 		case STATE_DYNAMIC_HUFFMAN_LENREP:
 			if (bitLen < m_lenExtraBits)
-				goto END;
+				continue;
 
 			{
 				int repeat = m_lenAddOn + BS_EATBITS(m_lenExtraBits);
@@ -1035,7 +806,7 @@ BOOL XInflate::_CreateTable(int* codes, BYTE* lengths, int numSymbols, XFastHuff
 	// 데이타가 손상된 경우 테이블이 정상적으로 만들어지지 않을 수 있으므로 에러 처리 필요.
 	for(UINT i=0;i<pTable->itemCount;i++)
 	{
-		if(pTable->pItem[i].symbol==HUFFTABLE_VALUE_NOT_EXIST)
+		if(pTable->pItems[i].symbol==HUFFTABLE_VALUE_NOT_EXIST)
 		{
 			ASSERT(0);
 			return FALSE;
@@ -1083,15 +854,15 @@ XINFLATE_ERR XInflate::FastInflate(IDecodeStream* stream, LPBYTE& inBuffer, int&
 		LPBYTE& outBufferCur, 
 		LPBYTE& outBufferEnd,
 		LPBYTE& windowStartPos, LPBYTE& windowCurPos,
-		UINT&		bits, int& bitLen,
+		BITSTREAM&		bits, int& bitLen,
 		STATE&		state,
 		int& windowLen, int& windowDistCode, int& symbol)
 {
 	XINFLATE_ERR	ret = XINFLATE_ERR_OK;
 	int				extrabits;
 	int				dist;
-	XFastHuffItem*	pItem;								// HUFFLOOKUP() 에서 사용
-	XFastHuffItem*	pItems = m_pCurrentTable->pItem;	// HUFFLOOKUP 에서 빨리 접근할수있게 로컬 변수에 복사해놓기
+	//XFastHuffItem*	pItem;							// HUFFLOOKUP() 에서 사용
+	XFastHuffItem*	pItems = m_pCurrentTable->pItems;	// HUFFLOOKUP 에서 빨리 접근할수있게 로컬 변수에 복사해놓기
 	int				mask = m_pCurrentTable->mask;		// ...마찬가지.
 	BYTE			byte;								// 임시 변수
 
@@ -1113,7 +884,8 @@ XINFLATE_ERR XInflate::FastInflate(IDecodeStream* stream, LPBYTE& inBuffer, int&
 		
 		/////////////////////////////////////
 		// 거리 코드 가져오기
-		HUFFLOOKUP(windowDistCode, m_pCurrentDistTable);
+		//HUFFLOOKUP(windowDistCode, m_pCurrentDistTable);
+		windowDistCode = m_pCurrentDistTable->HUFFLOOKUP(bitLen, bits);
 
 		//if(windowDistCode==30 || windowDistCode==31)	// 30 과 31은 생길 수 없다. RFC1951 3.2.6
 		if(windowDistCode>=30)							// 이론상 32, 33 등도 생길 수 있는듯?
@@ -1169,7 +941,13 @@ XINFLATE_ERR XInflate::FastInflate(IDecodeStream* stream, LPBYTE& inBuffer, int&
 
 			FILLBUFFER_FAST();
 
-			HUFFLOOKUP_FAST(symbol);
+			//HUFFLOOKUP_FAST(symbol);
+			//symbol = HUFFLOOKUP_FAST(pItems, mask, bitLen, bits);
+			XFastHuffItem*  pItem = &pItems[mask & bits];
+			symbol = pItem->symbol;
+			bits >>= (pItem->bitLen);
+			bitLen -= (pItem->bitLen);
+
 
 			if(symbol<0) 
 			{ASSERT(0); goto END;}					// 발생 불가.
