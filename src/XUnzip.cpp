@@ -141,7 +141,7 @@ XUnzip::XUnzip()
 	m_fileListSize = 0;
 	m_inflate = NULL;
 	m_err = XUNZIP_ERR_OK;
-	m_checkCRC32 = TRUE;
+	m_checkCRC32 = FALSE;
 }
 
 
